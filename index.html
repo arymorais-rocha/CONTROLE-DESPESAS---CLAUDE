@@ -3,6 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <title>Controle de Despesas</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0F1B2C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Despesas">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
@@ -120,6 +129,9 @@ tbody tr:hover{background:#FAFBF9;}
 @media (max-width:760px){
   .cards{grid-template-columns:repeat(2,1fr);}
   table{font-size:12.5px;}
+  thead th:nth-child(5),tbody td:nth-child(5){display:none;}
+  .icon-btn{width:34px;height:34px;}
+  .btn{padding:10px 14px;}
 }
 </style>
 </head>
@@ -810,6 +822,13 @@ function escapeAttr(str){ return String(str).replace(/"/g,'&quot;'); }
 
 render();
 loadData();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+
 </script>
 </body>
 </html>
