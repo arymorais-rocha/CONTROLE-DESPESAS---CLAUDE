@@ -137,6 +137,7 @@ const PLANOS = [
   {id:'alvorada', label:'Fazenda Alvorada', color:'var(--alvorada)'},
 ];
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxhlewWTqDvTYWP0sr5rmAg7swjS0w74DlSlK8swV2RLbSrUPrUkB_usivnXT7rI7BR/exec';
+const ACCESS_TOKEN = 'S_diM8z8pN3mUVIlSUwsG1Voe71el-NF';
 let lastSyncPayload = null;
 
 let state = {
@@ -176,10 +177,15 @@ const SITUACAO_LABEL = {'em-aberto':'Em aberto','vencida':'Vencida','paga':'Paga
 
 async function loadData(){
   try{
-    const res = await fetch(APPS_SCRIPT_URL, { method:'GET' });
+    const res = await fetch(APPS_SCRIPT_URL + '?token=' + encodeURIComponent(ACCESS_TOKEN), { method:'GET' });
     const data = await res.json();
-    state.contas = (data && data.contas) ? data.contas : [];
-    state.error = null;
+    if(data && data.ok){
+      state.contas = data.contas || [];
+      state.error = null;
+    } else {
+      state.contas = [];
+      state.error = 'Não foi possível carregar (acesso não autorizado). Verifique se o token está correto.';
+    }
   }catch(e){
     state.contas = [];
     state.error = 'Não foi possível carregar os dados da planilha agora. Verifique a conexão e recarregue a página.';
@@ -199,7 +205,7 @@ async function syncChange(changedContas, deletedIds, retriesLeft){
     const res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action:'sync', contas: changedContas, deletedIds: deletedIds }),
+      body: JSON.stringify({ action:'sync', token: ACCESS_TOKEN, contas: changedContas, deletedIds: deletedIds }),
     });
     const data = await res.json();
     if(data && data.ok){
