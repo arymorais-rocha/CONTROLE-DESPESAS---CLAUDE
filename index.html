@@ -135,6 +135,15 @@ tbody tr:hover{background:#FAFBF9;}
 .plano-add-row input[type="color"]{width:30px;height:30px;padding:2px;border:1px solid var(--rule);border-radius:6px;cursor:pointer;flex-shrink:0;}
 .plano-add-row input[type="text"]{flex:1;padding:9px 10px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
 
+.lock-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--navy-900);padding:20px;}
+.lock-card{background:#fff;border-radius:10px;padding:34px 28px;max-width:340px;width:100%;text-align:center;}
+.lock-card .lock-icon{font-size:28px;margin-bottom:10px;}
+.lock-card h1{font-family:'Zilla Slab',serif;font-size:20px;margin:0 0 6px;color:var(--ink);font-weight:600;}
+.lock-card p{font-size:13px;color:var(--ink-soft);margin:0 0 18px;}
+.lock-card input{width:100%;padding:11px 12px;border:1px solid var(--rule);border-radius:6px;font-size:14px;margin-bottom:12px;text-align:center;font-family:'Inter',sans-serif;}
+.lock-card .btn{width:100%;padding:11px;font-size:14px;}
+.lock-error{color:var(--red);font-size:12.5px;margin:-4px 0 12px;}
+
 @media (max-width:760px){
   .cards{grid-template-columns:repeat(2,1fr);}
   table{font-size:12.5px;}
@@ -151,7 +160,48 @@ tbody tr:hover{background:#FAFBF9;}
 <script>
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxhlewWTqDvTYWP0sr5rmAg7swjS0w74DlSlK8swV2RLbSrUPrUkB_usivnXT7rI7BR/exec';
 const ACCESS_TOKEN = 'S_diM8z8pN3mUVIlSUwsG1Voe71el-NF';
+const APP_PASSWORD_HASH = '7509ca24a95e871446f3fdb1f39cfdb7b802fc6986899bb44ab63da9e5d097aa';
+const LOCK_STORAGE_KEY = 'despesas-unlocked';
 let lastSyncPayload = null;
+
+async function sha256Hex(str){
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function isUnlocked(){
+  try{ return localStorage.getItem(LOCK_STORAGE_KEY) === '1'; }catch(e){ return false; }
+}
+function renderLockScreen(errorMsg){
+  document.getElementById('app').innerHTML = `
+    <div class="lock-screen">
+      <div class="lock-card">
+        <div class="lock-icon">🔒</div>
+        <h1>Controle de Despesas</h1>
+        <p>Digite a senha para continuar</p>
+        <form id="lock-form">
+          <input type="password" id="lock-password" placeholder="Senha" autocomplete="current-password" required>
+          ${errorMsg ? `<div class="lock-error">${errorMsg}</div>` : ''}
+          <button type="submit" class="btn btn-primary">Entrar</button>
+        </form>
+      </div>
+    </div>
+  `;
+  const pwInput = document.getElementById('lock-password');
+  pwInput.focus();
+  document.getElementById('lock-form').addEventListener('submit', async e=>{
+    e.preventDefault();
+    const val = pwInput.value;
+    const hash = await sha256Hex(val);
+    if(hash === APP_PASSWORD_HASH){
+      try{ localStorage.setItem(LOCK_STORAGE_KEY, '1'); }catch(e){}
+      render();
+      loadData();
+    } else {
+      renderLockScreen('Senha incorreta. Tente de novo.');
+    }
+  });
+}
 
 let state = {
   contas: [],
@@ -323,6 +373,7 @@ function render(){
         <div class="sub"><span class="sync-dot" style="background:${state.error?'var(--red)':'var(--green)'};"></span>Sincronizado com Google Sheets · ${state.planos.length} plano${state.planos.length===1?'':'s'} de contas</div>
       </div>
       <div class="actions">
+        <button class="btn btn-ghost" id="btn-lock" title="Bloquear app">🔒 Sair</button>
         <button class="btn btn-ghost" id="btn-planos">Planos de contas</button>
         <button class="btn btn-ghost" id="btn-import">Importar CSV</button>
         <input type="file" id="import-file" accept=".csv" style="display:none">
@@ -543,6 +594,13 @@ function renderModal(){
 
 function bindEvents(){
   const app = $('#app');
+
+  app.querySelector('#btn-lock').addEventListener('click', ()=>{
+    if(confirm('Bloquear o app? Vai ser preciso digitar a senha de novo para acessar.')){
+      try{ localStorage.removeItem(LOCK_STORAGE_KEY); }catch(e){}
+      location.reload();
+    }
+  });
 
   app.querySelector('#btn-planos').addEventListener('click', ()=>{
     state.planosModalOpen = true; state.exportOpen=false; render();
@@ -996,8 +1054,12 @@ function importFromCsvText(text){
 function escapeHtml(str){ const d=document.createElement('div'); d.textContent=str; return d.innerHTML; }
 function escapeAttr(str){ return String(str).replace(/"/g,'&quot;'); }
 
-render();
-loadData();
+if(isUnlocked()){
+  render();
+  loadData();
+} else {
+  renderLockScreen();
+}
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
