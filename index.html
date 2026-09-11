@@ -126,12 +126,18 @@ tbody tr:hover{background:#FAFBF9;}
 
 .footer-note{margin:16px 24px 0;font-size:11.5px;color:var(--ink-soft);display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
 
+.planos-list{max-height:280px;overflow-y:auto;margin-bottom:14px;}
+.plano-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--rule);}
+.plano-row:last-child{border-bottom:none;}
+.plano-row input[type="color"]{width:30px;height:30px;padding:2px;border:1px solid var(--rule);border-radius:6px;cursor:pointer;flex-shrink:0;}
+.plano-row input[type="text"]{flex:1;padding:8px 9px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+.plano-add-row{display:flex;align-items:center;gap:8px;padding-top:10px;border-top:1px solid var(--rule);}
+.plano-add-row input[type="color"]{width:30px;height:30px;padding:2px;border:1px solid var(--rule);border-radius:6px;cursor:pointer;flex-shrink:0;}
+.plano-add-row input[type="text"]{flex:1;padding:9px 10px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+
 @media (max-width:760px){
   .cards{grid-template-columns:repeat(2,1fr);}
   table{font-size:12.5px;}
-  thead th:nth-child(5),tbody td:nth-child(5){display:none;}
-  .icon-btn{width:34px;height:34px;}
-  .btn{padding:10px 14px;}
 }
 </style>
 </head>
@@ -143,17 +149,13 @@ tbody tr:hover{background:#FAFBF9;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 
 <script>
-const PLANOS = [
-  {id:'romerio', label:'Romerio', color:'var(--romerio)'},
-  {id:'boa-esperanca', label:'Fazenda Boa Esperança', color:'var(--boaesp)'},
-  {id:'alvorada', label:'Fazenda Alvorada', color:'var(--alvorada)'},
-];
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxhlewWTqDvTYWP0sr5rmAg7swjS0w74DlSlK8swV2RLbSrUPrUkB_usivnXT7rI7BR/exec';
 const ACCESS_TOKEN = 'S_diM8z8pN3mUVIlSUwsG1Voe71el-NF';
 let lastSyncPayload = null;
 
 let state = {
   contas: [],
+  planos: [],
   loading: true,
   selected: new Set(),
   filterPlano: 'todos',
@@ -168,6 +170,7 @@ let state = {
   editId: null,
   exportOpen: false,
   pagarModalOpen: false,
+  planosModalOpen: false,
   error: null,
 };
 
@@ -176,7 +179,7 @@ const genId = () => Date.now()+'-'+Math.random().toString(36).slice(2,7);
 const todayStr = () => new Date().toISOString().slice(0,10);
 const fmtMoney = n => 'R$ ' + Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = iso => { if(!iso) return '-'; const [y,m,d]=iso.split('-'); return d+'/'+m+'/'+y; };
-const planoInfo = id => PLANOS.find(p=>p.id===id) || PLANOS[0];
+const planoInfo = id => state.planos.find(p=>p.id===id) || {id:id||'sem-plano', label:'Sem plano', color:'#746C5C'};
 
 function getSituacao(c){
   if(c.pagamento) return 'paga';
@@ -193,6 +196,7 @@ async function loadData(){
     const data = await res.json();
     if(data && data.ok){
       state.contas = data.contas || [];
+      state.planos = data.planos || [];
       state.error = null;
     } else {
       state.contas = [];
@@ -222,6 +226,7 @@ async function syncChange(changedContas, deletedIds, retriesLeft){
     const data = await res.json();
     if(data && data.ok){
       state.contas = data.contas || [];
+      if(data.planos) state.planos = data.planos;
       state.error = null;
       render();
       return;
@@ -233,6 +238,34 @@ async function syncChange(changedContas, deletedIds, retriesLeft){
       return syncChange(changedContas, deletedIds, retriesLeft-1);
     }
     state.error = 'Não foi possível salvar agora (conexão instável). Suas alterações continuam nesta tela — clique em "Tentar novamente".';
+    render();
+  }
+}
+
+// Mesmo esquema, mas pra planos de contas (criar/renomear/excluir).
+async function syncPlanos(changedPlanos, deletedPlanoIds, retriesLeft){
+  if(retriesLeft===undefined) retriesLeft = 2;
+  try{
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action:'sync', token: ACCESS_TOKEN, planos: changedPlanos, deletedPlanoIds: deletedPlanoIds }),
+    });
+    const data = await res.json();
+    if(data && data.ok){
+      state.planos = data.planos || [];
+      if(data.contas) state.contas = data.contas;
+      state.error = null;
+      render();
+      return;
+    }
+    throw new Error((data && data.error) || 'Falha ao salvar');
+  }catch(e){
+    if(retriesLeft>0){
+      await new Promise(r=>setTimeout(r, 700));
+      return syncPlanos(changedPlanos, deletedPlanoIds, retriesLeft-1);
+    }
+    state.error = 'Não foi possível salvar os planos de contas agora (conexão instável). Tente novamente.';
     render();
   }
 }
@@ -287,9 +320,10 @@ function render(){
     <div class="topbar">
       <div>
         <h1>Controle de Despesas</h1>
-        <div class="sub"><span class="sync-dot" style="background:${state.error?'var(--red)':'var(--green)'};"></span>Sincronizado com Google Sheets · plano de contas: Romerio, Fazenda Boa Esperança, Fazenda Alvorada</div>
+        <div class="sub"><span class="sync-dot" style="background:${state.error?'var(--red)':'var(--green)'};"></span>Sincronizado com Google Sheets · ${state.planos.length} plano${state.planos.length===1?'':'s'} de contas</div>
       </div>
       <div class="actions">
+        <button class="btn btn-ghost" id="btn-planos">Planos de contas</button>
         <button class="btn btn-ghost" id="btn-import">Importar CSV</button>
         <input type="file" id="import-file" accept=".csv" style="display:none">
         <div class="dropdown-wrap">
@@ -320,7 +354,7 @@ function render(){
     <div class="filterbar">
       <select id="f-plano">
         <option value="todos">Todos os planos de contas</option>
-        ${PLANOS.map(p=>`<option value="${p.id}" ${state.filterPlano===p.id?'selected':''}>${p.label}</option>`).join('')}
+        ${state.planos.map(p=>`<option value="${p.id}" ${state.filterPlano===p.id?'selected':''}>${p.label}</option>`).join('')}
       </select>
       <input class="grow" type="text" id="f-busca" placeholder="Pesquisar fornecedor…" value="${state.filterBusca}">
       <select id="f-datefield">
@@ -399,6 +433,7 @@ function render(){
 
     ${state.modalOpen ? renderModal() : ''}
     ${state.pagarModalOpen ? renderPagarModal() : ''}
+    ${state.planosModalOpen ? renderPlanosModal() : ''}
   `;
 
   bindEvents();
@@ -436,6 +471,37 @@ function renderPagarModal(){
   `;
 }
 
+function renderPlanosModal(){
+  return `
+    <div class="modal-overlay" id="planos-overlay">
+      <div class="modal">
+        <h2>Planos de contas</h2>
+        <p style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 14px;">Renomeie, mude a cor ou exclua. As despesas já lançadas acompanham o novo nome automaticamente.</p>
+        <div class="planos-list">
+          ${state.planos.map(p=>{
+            const emUso = state.contas.some(c=>c.plano===p.id);
+            return `
+            <div class="plano-row">
+              <input type="color" class="plano-color-input" data-plano-id="${p.id}" value="${p.color}">
+              <input type="text" class="plano-label-input" data-plano-id="${p.id}" value="${escapeAttr(p.label)}">
+              <button type="button" class="icon-btn danger" data-plano-del="${p.id}" title="${emUso?'Excluir (em uso)':'Excluir'}">🗑</button>
+            </div>`;
+          }).join('')}
+          ${state.planos.length===0 ? `<p style="font-size:13px;color:var(--ink-soft);">Nenhum plano cadastrado ainda.</p>` : ''}
+        </div>
+        <div class="plano-add-row">
+          <input type="color" id="novo-plano-color" value="#4A6670">
+          <input type="text" id="novo-plano-label" placeholder="Nome do novo plano de contas">
+          <button type="button" class="btn btn-primary" id="btn-add-plano">+ Adicionar</button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" id="planos-close">Fechar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderModal(){
   const editing = state.editId ? state.contas.find(c=>c.id===state.editId) : null;
   const tipo = editing ? editing.tipo : state.modalTipo;
@@ -452,7 +518,7 @@ function renderModal(){
           <div class="field"><label>Fornecedor / descrição</label><input type="text" name="fornecedor" value="${editing? escapeAttr(editing.fornecedor):''}" required></div>
           <div class="field"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" name="valor" value="${editing? editing.valor:''}" required></div>
           <div class="field"><label>Plano de contas</label>
-            <select name="plano">${PLANOS.map(p=>`<option value="${p.id}" ${editing&&editing.plano===p.id?'selected':''}>${p.label}</option>`).join('')}</select>
+            <select name="plano">${state.planos.map(p=>`<option value="${p.id}" ${editing&&editing.plano===p.id?'selected':''}>${p.label}</option>`).join('')}</select>
           </div>
           ${tipo==='conta-a-pagar' ? `
           <div class="field"><label>Vencimento</label><input type="date" name="vencimento" value="${editing? editing.vencimento:''}" required></div>
@@ -471,6 +537,10 @@ function renderModal(){
 
 function bindEvents(){
   const app = $('#app');
+
+  app.querySelector('#btn-planos').addEventListener('click', ()=>{
+    state.planosModalOpen = true; state.exportOpen=false; render();
+  });
 
   app.querySelector('#btn-nova').addEventListener('click', ()=>{
     state.modalOpen = true; state.modalTipo='conta-a-pagar'; state.editId=null; state.exportOpen=false; render();
@@ -618,6 +688,62 @@ function bindEvents(){
     });
   }
 
+  const planosOverlay = app.querySelector('#planos-overlay');
+  if(planosOverlay){
+    planosOverlay.addEventListener('click', e=>{ if(e.target===planosOverlay){ state.planosModalOpen=false; render(); } });
+    app.querySelector('#planos-close').addEventListener('click', ()=>{ state.planosModalOpen=false; render(); });
+
+    app.querySelectorAll('.plano-label-input').forEach(input=>{
+      input.addEventListener('change', ()=>{
+        const id = input.dataset.planoId;
+        const novoLabel = input.value.trim();
+        if(!novoLabel) return;
+        const plano = state.planos.find(p=>p.id===id);
+        if(!plano || plano.label===novoLabel) return;
+        plano.label = novoLabel;
+        syncPlanos([plano], []);
+      });
+    });
+
+    app.querySelectorAll('.plano-color-input').forEach(input=>{
+      input.addEventListener('change', ()=>{
+        const id = input.dataset.planoId;
+        const plano = state.planos.find(p=>p.id===id);
+        if(!plano) return;
+        plano.color = input.value;
+        render();
+        syncPlanos([plano], []);
+      });
+    });
+
+    app.querySelectorAll('[data-plano-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.planoDel;
+        const emUso = state.contas.filter(c=>c.plano===id).length;
+        if(emUso>0){
+          alert(`Esse plano tem ${emUso} despesa(s) vinculada(s). Mude o plano dessas despesas (ou exclua-as) antes de remover este plano de contas.`);
+          return;
+        }
+        if(!confirm('Excluir este plano de contas?')) return;
+        state.planos = state.planos.filter(p=>p.id!==id);
+        if(state.filterPlano===id) state.filterPlano='todos';
+        render();
+        syncPlanos([], [id]);
+      });
+    });
+
+    app.querySelector('#btn-add-plano').addEventListener('click', ()=>{
+      const labelInput = app.querySelector('#novo-plano-label');
+      const colorInput = app.querySelector('#novo-plano-color');
+      const label = labelInput.value.trim();
+      if(!label) { labelInput.focus(); return; }
+      const novo = { id: genId(), label, color: colorInput.value };
+      state.planos.push(novo);
+      render();
+      syncPlanos([novo], []);
+    });
+  }
+
   const overlay = app.querySelector('#modal-overlay');
   if(overlay){
     overlay.addEventListener('click', e=>{ if(e.target===overlay) closeModal(); });
@@ -750,10 +876,16 @@ function parseDateBR(str){
 }
 function planoFromControle(str){
   const n = normalizeStr(str);
+  if(!n) return state.planos[0] ? state.planos[0].id : '';
+  const exato = state.planos.find(p=> normalizeStr(p.label)===n);
+  if(exato) return exato.id;
+  const parcial = state.planos.find(p=> n.includes(normalizeStr(p.label)) || normalizeStr(p.label).includes(n));
+  if(parcial) return parcial.id;
+  // fallback: mantém compatibilidade com nomes antigos usados antes de existir gerenciamento de planos
   if(n.includes('alvorada')) return 'alvorada';
   if(n.includes('boa esperanca') || n.includes('santa helena')) return 'boa-esperanca';
   if(n.includes('romerio')) return 'romerio';
-  return 'romerio';
+  return state.planos[0] ? state.planos[0].id : '';
 }
 function parseCsvText(text){
   const clean = text.replace(/^\uFEFF/, '');
@@ -828,7 +960,6 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   });
 }
-
 </script>
 </body>
 </html>
