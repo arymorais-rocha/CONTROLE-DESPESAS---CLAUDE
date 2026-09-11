@@ -397,7 +397,7 @@ function render(){
             <th>Vencimento</th>
             <th>Pagamento</th>
             <th>Situação</th>
-            <th style="width:80px;">Ações</th>
+            <th style="width:110px;">Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -409,12 +409,13 @@ function render(){
               return `
               <tr>
                 <td><input type="checkbox" class="row-check" data-id="${c.id}" ${state.selected.has(c.id)?'checked':''}></td>
-                <td class="fornecedor">${escapeHtml(c.fornecedor)}${c.anexo ? ` <a href="${c.anexo}" target="_blank" rel="noopener" title="Ver anexo" style="text-decoration:none;">📎</a>` : ''}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span></td>
+                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span></td>
                 <td class="valor-cell">${fmtMoney(c.valor)}</td>
                 <td class="date-cell">${fmtDate(c.vencimento)}</td>
                 <td class="date-cell">${fmtDate(c.pagamento)}</td>
                 <td><span class="badge ${sit}">${SITUACAO_LABEL[sit].toUpperCase()}</span></td>
                 <td class="acoes">
+                  <button class="icon-btn" data-view-anexo="${c.id}" title="${c.anexo?'Ver anexo':'Sem anexo'}" ${c.anexo?'':'disabled style="opacity:.35;cursor:not-allowed;"'}>📎</button>
                   <button class="icon-btn" data-edit="${c.id}" title="Editar">✎</button>
                   <button class="icon-btn danger" data-del="${c.id}" title="Excluir">🗑</button>
                 </td>
@@ -549,6 +550,13 @@ function bindEvents(){
 
   app.querySelector('#btn-nova').addEventListener('click', ()=>{
     state.modalOpen = true; state.modalTipo='conta-a-pagar'; state.editId=null; state.exportOpen=false; render();
+  });
+
+  app.querySelectorAll('.icon-btn[data-view-anexo]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const c = state.contas.find(x=>x.id===btn.dataset.viewAnexo);
+      if(c && c.anexo) window.open(c.anexo, '_blank', 'noopener');
+    });
   });
 
   app.querySelectorAll('.icon-btn[data-edit]').forEach(btn=>{
