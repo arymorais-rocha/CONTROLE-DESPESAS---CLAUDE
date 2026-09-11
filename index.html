@@ -409,7 +409,7 @@ function render(){
               return `
               <tr>
                 <td><input type="checkbox" class="row-check" data-id="${c.id}" ${state.selected.has(c.id)?'checked':''}></td>
-                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span></td>
+                <td class="fornecedor">${escapeHtml(c.fornecedor)}${c.anexo ? ` <a href="${c.anexo}" target="_blank" rel="noopener" title="Ver anexo" style="text-decoration:none;">📎</a>` : ''}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span></td>
                 <td class="valor-cell">${fmtMoney(c.valor)}</td>
                 <td class="date-cell">${fmtDate(c.vencimento)}</td>
                 <td class="date-cell">${fmtDate(c.pagamento)}</td>
@@ -525,6 +525,11 @@ function renderModal(){
           ` : `
           <div class="field"><label>Data</label><input type="date" name="vencimento" value="${editing? editing.vencimento: todayStr()}" required></div>
           `}
+          <div class="field">
+            <label>Anexo (nota fiscal, boleto...)</label>
+            ${editing && editing.anexo ? `<div style="margin-bottom:6px;font-size:12.5px;"><a href="${editing.anexo}" target="_blank" rel="noopener">📎 Ver anexo atual</a> — escolha outro arquivo abaixo pra substituir</div>` : ''}
+            <input type="file" name="anexo" accept=".pdf,image/*">
+          </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-outline" id="modal-cancel">Cancelar</button>
             <button type="submit" class="btn btn-primary">${editing?'Salvar':'Lançar'}</button>
@@ -751,11 +756,22 @@ function bindEvents(){
     app.querySelectorAll('.tipo-toggle button').forEach(btn=>{
       btn.addEventListener('click', ()=>{ state.modalTipo = btn.dataset.tipo; render(); });
     });
-    app.querySelector('#conta-form').addEventListener('submit', e=>{
+    app.querySelector('#conta-form').addEventListener('submit', async e=>{
       e.preventDefault();
       const fd = new FormData(e.target);
       const valor = parseFloat(fd.get('valor'));
       if(!valor || valor<=0) return;
+
+      const anexoFile = fd.get('anexo');
+      let anexoBase64 = null;
+      if(anexoFile && anexoFile.size>0){
+        if(anexoFile.size > 8*1024*1024){
+          alert('O arquivo é muito grande (máximo 8MB). Escolha um arquivo menor.');
+          return;
+        }
+        anexoBase64 = await fileToBase64(anexoFile);
+      }
+
       let changedItem;
       if(state.editId){
         state.contas = state.contas.map(c=> {
@@ -766,6 +782,11 @@ function bindEvents(){
               valor, plano: fd.get('plano'),
               vencimento: fd.get('vencimento'),
             };
+            if(anexoBase64){
+              changedItem.anexoBase64 = anexoBase64;
+              changedItem.anexoNome = anexoFile.name;
+              changedItem.anexoMimeType = anexoFile.type;
+            }
             return changedItem;
           }
           return c;
@@ -780,6 +801,11 @@ function bindEvents(){
           vencimento: fd.get('vencimento'),
           pagamento: isAvulso ? fd.get('vencimento') : null,
         };
+        if(anexoBase64){
+          changedItem.anexoBase64 = anexoBase64;
+          changedItem.anexoNome = anexoFile.name;
+          changedItem.anexoMimeType = anexoFile.type;
+        }
         state.contas.unshift(changedItem);
       }
       closeModal();
@@ -790,14 +816,23 @@ function bindEvents(){
 
 function closeModal(){ state.modalOpen=false; state.editId=null; render(); }
 
+function fileToBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function exportCsv(rows, filename){
-  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao'];
+  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao','Anexo'];
   const lines = [header.join(';')];
   rows.forEach(c=>{
     lines.push([
       c.fornecedor.replace(/;/g,','), c.valor.toFixed(2).replace('.',','),
       planoInfo(c.plano).label, fmtDate(c.vencimento), fmtDate(c.pagamento),
-      SITUACAO_LABEL[getSituacao(c)]
+      SITUACAO_LABEL[getSituacao(c)], c.anexo || ''
     ].join(';'));
   });
   const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
@@ -815,10 +850,11 @@ function exportXls(rows, filename){
     'Valor': c.valor,
     'Vencimento': fmtDate(c.vencimento),
     'Pagamento': fmtDate(c.pagamento),
-    'Situação': SITUACAO_LABEL[getSituacao(c)]
+    'Situação': SITUACAO_LABEL[getSituacao(c)],
+    'Anexo': c.anexo || ''
   }));
   const total = rows.reduce((s,c)=>s+c.valor,0);
-  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Situação':'TOTAL'});
+  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Situação':'TOTAL', 'Anexo':''});
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Despesas');
