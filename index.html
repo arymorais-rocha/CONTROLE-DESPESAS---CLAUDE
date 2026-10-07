@@ -127,6 +127,14 @@ tbody tr:hover{background:#FAFBF9;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
 .btn-outline{background:#fff;border:1px solid var(--rule);color:var(--ink-soft);}
 
+/* Forma de pagamento: dá pra marcar mais de uma (Dinheiro + Pix, Dinheiro + Cartão...) */
+.field .formas-chips{display:flex;flex-wrap:wrap;gap:8px;}
+.field .forma-chip{display:inline-flex;align-items:center;gap:7px;margin:0;padding:8px 12px;border:1px solid var(--rule);border-radius:20px;font-size:13px;font-weight:500;color:var(--ink);background:#fff;cursor:pointer;user-select:none;-webkit-user-select:none;}
+.field .forma-chip input{width:16px;height:16px;padding:0;margin:0;flex-shrink:0;accent-color:var(--blue);cursor:pointer;}
+.field .forma-chip:has(input:checked){border-color:var(--blue);background:#EEF3FD;}
+.field .forma-chip input:checked + span{font-weight:600;}
+.field-error{color:var(--red);font-size:12px;font-weight:600;margin-top:6px;}
+
 .footer-note{margin:16px 24px 0;font-size:11.5px;color:var(--ink-soft);display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
 
 .planos-list{max-height:280px;overflow-y:auto;margin-bottom:14px;}
@@ -140,6 +148,7 @@ tbody tr:hover{background:#FAFBF9;}
 
 .comentario-line{font-size:12px;font-weight:400;color:var(--ink-soft);margin-top:5px;line-height:1.35;max-width:420px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;}
 .conta-line{font-size:11.5px;color:var(--ink-soft);margin-top:3px;white-space:normal;}
+.obs-pag-line{font-size:11.5px;color:var(--ink-soft);margin-top:3px;line-height:1.35;max-width:240px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;}
 
 .modal.modal-wide{max-width:580px;}
 .cc-list{max-height:300px;overflow-y:auto;margin-bottom:14px;}
@@ -178,7 +187,21 @@ const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxhlewWTqDvTYWP
 const ACCESS_TOKEN = 'S_diM8z8pN3mUVIlSUwsG1Voe71el-NF';
 const APP_PASSWORD_HASH = '7509ca24a95e871446f3fdb1f39cfdb7b802fc6986899bb44ab63da9e5d097aa';
 const LOCK_STORAGE_KEY = 'despesas-unlocked';
+// Versão mínima do Apps Script (Code.gs) que este app espera. A versão 3 é a
+// que grava a forma de pagamento e a observação do pagamento.
+const BACKEND_VERSAO_MINIMA = 3;
 let lastSyncPayload = null;
+
+// Formas de pagamento. "conta" diz se a forma mexe numa conta corrente:
+// 'obrigatoria' pede a conta a ser debitada, 'opcional' deixa informar,
+// 'nao' dispensa (pagamento só em dinheiro não sai de conta nenhuma).
+const FORMAS_PAGAMENTO = [
+  { id:'dinheiro',       label:'Dinheiro',       conta:'nao' },
+  { id:'pix',            label:'Pix',            conta:'obrigatoria' },
+  { id:'cartao',         label:'Cartão',         conta:'opcional' },
+  { id:'conta-corrente', label:'Conta corrente', conta:'obrigatoria' },
+  { id:'cheque',         label:'Cheque',         conta:'obrigatoria' },
+];
 
 async function sha256Hex(str){
   const enc = new TextEncoder().encode(str);
@@ -224,6 +247,7 @@ let state = {
   planos: [],
   contasCorrentes: [],
   backendDesatualizado: false,
+  backendSemContas: false,
   loading: true,
   selected: new Set(),
   filterPlano: 'todos',
@@ -258,16 +282,82 @@ const planoInfo = id => state.planos.find(p=>p.id===id) || {id:id||'sem-plano', 
 const contaInfo = id => id ? (state.contasCorrentes.find(cc=>cc.id===id) || {id:id, nome:'Conta removida', detalhes:''}) : null;
 const contaNome = id => { const cc = contaInfo(id); return cc ? cc.nome : ''; };
 
-// Guarda as contas correntes que vieram da planilha. Se a resposta não trouxe
-// essa lista, o Apps Script da planilha ainda é o antigo (sem contas correntes
-// e sem comentário) — o app avisa na tela em vez de perder o que foi digitado.
-function applyContasCorrentes(data){
-  if(data && Array.isArray(data.contasCorrentes)){
-    state.contasCorrentes = data.contasCorrentes;
-    state.backendDesatualizado = false;
-  } else {
-    state.backendDesatualizado = true;
+// --- Forma de pagamento -----------------------------------------------------
+// Na planilha fica gravado o texto que a pessoa lê ("Dinheiro + Pix"). Aqui o
+// texto vira a lista de formas marcadas, e vice-versa.
+function parseFormas(str){
+  const partes = String(str||'').split(/[+,;\/]/).map(normalizeStr).filter(Boolean);
+  return FORMAS_PAGAMENTO.filter(f=>partes.includes(normalizeStr(f.label)) || partes.includes(f.id)).map(f=>f.id);
+}
+function formasLabel(ids){
+  return FORMAS_PAGAMENTO.filter(f=>ids.includes(f.id)).map(f=>f.label).join(' + ');
+}
+// Texto da forma de pagamento de uma despesa (se alguém escreveu outra coisa direto na planilha, mostra como está).
+function formaTexto(c){
+  const ids = parseFormas(c.formaPagamento);
+  return ids.length ? formasLabel(ids) : String(c.formaPagamento||'').trim();
+}
+// A conta a ser debitada depende do que foi marcado. Sem nada marcado: onde a
+// forma é obrigatória o campo de conta só aparece depois da escolha; na edição
+// de pagamentos antigos (sem forma gravada) a conta continua aparecendo.
+function regraConta(ids, formaObrigatoria){
+  if(ids.length===0) return formaObrigatoria ? 'nao' : 'opcional';
+  const regras = FORMAS_PAGAMENTO.filter(f=>ids.includes(f.id)).map(f=>f.conta);
+  if(regras.includes('obrigatoria')) return 'obrigatoria';
+  if(regras.includes('opcional')) return 'opcional';
+  return 'nao';
+}
+function formasMarcadas(form){
+  return Array.from(form.querySelectorAll('input[name="formaPagamento"]:checked')).map(i=>i.value);
+}
+// Mostra/esconde o campo de conta conforme as formas marcadas (sem redesenhar a tela).
+function ajustarCampoConta(form){
+  const grupo = form.querySelector('[data-formas-grupo]');
+  const wrap = form.querySelector('[data-conta-wrap]');
+  if(!grupo || !wrap) return;
+  const regra = regraConta(formasMarcadas(form), grupo.dataset.obrigatorio==='1');
+  wrap.hidden = regra==='nao';
+  const sel = wrap.querySelector('select');
+  if(sel){
+    sel.disabled = regra==='nao';
+    sel.required = regra==='obrigatoria';
+    sel.options[0].textContent = regra==='obrigatoria' ? 'Selecione a conta…' : 'Não informada';
   }
+}
+function mostrarErroFormas(form){
+  const erro = form.querySelector('[data-formas-erro]');
+  if(erro) erro.hidden = false;
+  const primeiro = form.querySelector('input[name="formaPagamento"]');
+  if(primeiro) primeiro.focus();
+}
+// Lê do formulário a forma de pagamento e a conta. Devolve null se faltou marcar a forma.
+// contaPagamento vem null quando não é pra mexer na conta já gravada.
+function lerFormaEConta(form, fd){
+  const grupo = form.querySelector('[data-formas-grupo]');
+  if(!grupo) return { temForma:false, formas:[], contaPagamento: fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null };
+  const obrigatoria = grupo.dataset.obrigatorio==='1';
+  const formas = formasMarcadas(form);
+  if(obrigatoria && formas.length===0){ mostrarErroFormas(form); return null; }
+  const regra = regraConta(formas, obrigatoria);
+  // só em dinheiro: não sai de conta nenhuma, então limpa a conta que estivesse gravada
+  const contaPagamento = regra==='nao' ? '' : (fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null);
+  return { temForma:true, formas, contaPagamento };
+}
+// Linhas que aparecem embaixo da data de pagamento na tabela.
+function pagamentoDetalhes(c){
+  const linha = [formaTexto(c), contaNome(c.contaPagamento)].filter(Boolean).join(' · ');
+  return (linha ? `<div class="conta-line">${escapeHtml(linha)}</div>` : '')
+    + (c.obsPagamento ? `<div class="obs-pag-line" title="${escapeAttr(c.obsPagamento)}">📝 ${escapeHtml(c.obsPagamento)}</div>` : '');
+}
+
+// Guarda as contas correntes que vieram da planilha e confere a versão do Apps
+// Script. Se a resposta não trouxe as contas correntes ou veio de uma versão
+// antiga do Code.gs, o app avisa na tela em vez de perder o que foi digitado.
+function applyContasCorrentes(data){
+  const temContas = !!(data && Array.isArray(data.contasCorrentes));
+  if(temContas) state.contasCorrentes = data.contasCorrentes;
+  state.backendSemContas = !temContas;
+  state.backendDesatualizado = !temContas || !(Number(data.versao) >= BACKEND_VERSAO_MINIMA);
 }
 
 function getSituacao(c){
@@ -395,7 +485,7 @@ function getFiltered(){
   const busca = state.filterBusca.toLowerCase();
   return state.contas.filter(c=>{
     if(state.filterPlano!=='todos' && c.plano!==state.filterPlano) return false;
-    if(busca && !String(c.fornecedor||'').toLowerCase().includes(busca) && !String(c.comentario||'').toLowerCase().includes(busca)) return false;
+    if(busca && ![c.fornecedor, c.comentario, c.obsPagamento, formaTexto(c)].some(t=>String(t||'').toLowerCase().includes(busca))) return false;
     const dateVal = c[state.filterDateField];
     if(state.filterMes){
       if(!dateVal || dateVal.slice(0,7)!==state.filterMes) return false;
@@ -442,6 +532,11 @@ function captureDrafts(){
         if(el.files && el.files.length) drafts.push({ov:ov.id, key, node:el});
         return;
       }
+      // caixinhas de marcar (formas de pagamento): o que muda é o "marcado", não o valor
+      if(el.type==='checkbox' || el.type==='radio'){
+        if(el.checked!==el.defaultChecked) drafts.push({ov:ov.id, key, checked:el.checked});
+        return;
+      }
       const alterado = el.tagName==='SELECT'
         ? Array.from(el.options).some(o=>o.selected!==o.defaultSelected)
         : el.value!==el.defaultValue;
@@ -460,6 +555,7 @@ function restoreDrafts(drafts){
     const el = findField(d.ov, d.key);
     if(!el) return; // o formulário foi fechado ou o campo não existe mais
     if(d.node){ el.replaceWith(d.node); return; }
+    if('checked' in d){ el.checked = d.checked; return; }
     if(el.tagName==='SELECT' && !Array.from(el.options).some(o=>o.value===d.value)) return;
     el.value = d.value;
   });
@@ -518,7 +614,9 @@ function render(){
     </div>
 
     ${state.backendDesatualizado && !state.loading && !state.error ? `
-    <div class="notice"><b>Falta atualizar o Apps Script da planilha.</b> Enquanto o novo Code.gs não for colado e reimplantado, os comentários, as contas correntes e a conta de débito dos pagamentos não ficam gravados.</div>` : ''}
+    <div class="notice"><b>Falta atualizar o Apps Script da planilha.</b> ${state.backendSemContas
+      ? 'Enquanto o novo Code.gs não for colado e reimplantado, os comentários, as contas correntes, a forma de pagamento e a observação dos pagamentos não ficam gravados.'
+      : 'Enquanto o novo Code.gs não for colado e reimplantado, a forma de pagamento e a observação dos pagamentos não ficam gravadas.'}</div>` : ''}
 
     <div class="cards">
       <div class="card"><div class="label">A VENCER${state.filterPlano!=='todos'?' · '+planoInfo(state.filterPlano).label.toUpperCase():''}</div><div class="value">${fmtMoney(aVencer)}</div></div>
@@ -532,7 +630,7 @@ function render(){
         <option value="todos">Todos os planos de contas</option>
         ${state.planos.map(p=>`<option value="${p.id}" ${state.filterPlano===p.id?'selected':''}>${p.label}</option>`).join('')}
       </select>
-      <input class="grow" type="text" id="f-busca" placeholder="Pesquisar fornecedor ou comentário…" value="${escapeAttr(state.filterBusca)}">
+      <input class="grow" type="text" id="f-busca" placeholder="Pesquisar fornecedor, comentário ou observação…" value="${escapeAttr(state.filterBusca)}">
       <select id="f-datefield">
         <option value="vencimento" ${state.filterDateField==='vencimento'?'selected':''}>Por vencimento</option>
         <option value="pagamento" ${state.filterDateField==='pagamento'?'selected':''}>Por pagamento</option>
@@ -588,7 +686,7 @@ function render(){
                 <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span>${c.comentario ? `<div class="comentario-line" title="${escapeAttr(c.comentario)}">💬 ${escapeHtml(c.comentario)}</div>` : ''}</td>
                 <td class="valor-cell">${fmtMoney(c.valor)}</td>
                 <td class="date-cell">${fmtDate(c.vencimento)}</td>
-                <td class="date-cell">${fmtDate(c.pagamento)}${c.pagamento && c.contaPagamento ? `<div class="conta-line">${escapeHtml(contaNome(c.contaPagamento))}</div>` : ''}</td>
+                <td class="date-cell">${fmtDate(c.pagamento)}${c.pagamento ? pagamentoDetalhes(c) : ''}</td>
                 <td><span class="badge ${sit}">${SITUACAO_LABEL[sit].toUpperCase()}</span></td>
                 <td class="acoes">
                   <button class="icon-btn" data-view-anexo="${c.id}" title="${c.anexo?'Ver anexo':'Sem anexo'}" ${c.anexo?'':'disabled style="opacity:.35;cursor:not-allowed;"'}>📎</button>
@@ -631,6 +729,8 @@ function render(){
 function renderPagarModal(){
   const rows = getSelectedRows();
   const total = rows.reduce((s,c)=>s+c.valor,0);
+  // com uma despesa só, traz o que já estiver gravado nela (caso de corrigir um pagamento)
+  const unica = rows.length===1 ? rows[0] : null;
   return `
     <div class="modal-overlay" id="pagar-overlay">
       <div class="modal">
@@ -640,7 +740,11 @@ function renderPagarModal(){
         </p>
         <form id="pagar-form">
           <div class="field"><label>Data de pagamento</label><input type="date" name="dataPagamento" value="${todayStr()}" required></div>
-          ${contaSelectField('contaPagamento', 'Conta a ser debitada', rows.length===1 ? rows[0].contaPagamento : '', true)}
+          ${formaPagamentoField('pagar', unica ? parseFormas(unica.formaPagamento) : [], true)}
+          ${contaSelectField('contaPagamento', 'Conta a ser debitada', unica ? (unica.contaPagamento||'') : '', true)}
+          <div class="field"><label>Observação do pagamento (opcional)</label><textarea name="obsPagamento" rows="2" maxlength="500" placeholder="Ex.: R$ 500,00 em dinheiro e o restante no Pix">${unica ? escapeHtml(unica.obsPagamento||'') : ''}</textarea>
+            ${rows.length>1 ? `<div class="hint">A forma de pagamento e a observação valem para as ${rows.length} despesas selecionadas.</div>` : ''}
+          </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-outline" id="pagar-cancel">Cancelar</button>
             <button type="submit" class="btn btn-green">Confirmar pagamento</button>
@@ -651,20 +755,36 @@ function renderPagarModal(){
   `;
 }
 
+// Campo "forma de pagamento": caixinhas, pra poder marcar mais de uma
+// (Dinheiro + Cartão, Dinheiro + Pix, Dinheiro + Conta corrente...).
+function formaPagamentoField(prefixo, selecionadas, obrigatorio){
+  return `
+    <div class="field" data-formas-grupo data-obrigatorio="${obrigatorio?'1':''}">
+      <label>Forma de pagamento${obrigatorio?'':' (opcional)'}</label>
+      <div class="formas-chips">
+        ${FORMAS_PAGAMENTO.map(f=>`<label class="forma-chip"><input type="checkbox" id="${prefixo}-forma-${f.id}" name="formaPagamento" value="${f.id}" ${selecionadas.includes(f.id)?'checked':''}><span>${f.label}</span></label>`).join('')}
+      </div>
+      <div class="hint">Pagou de mais de um jeito? Marque todas as formas usadas (ex.: Dinheiro + Pix).</div>
+      <div class="field-error" data-formas-erro hidden>Marque pelo menos uma forma de pagamento.</div>
+    </div>`;
+}
+
 // Campo "de qual conta corrente sai o pagamento". Quando ainda não existe
 // nenhuma conta cadastrada, mostra o atalho pro cadastro em vez de uma lista vazia.
+// Se o formulário também tem a forma de pagamento, é ela que decide se este
+// campo aparece e se é obrigatório (veja ajustarCampoConta).
 function contaSelectField(name, label, selectedId, obrigatorio){
   const contas = state.contasCorrentes;
   if(contas.length===0){
     return `
-      <div class="field"><label>${label}</label>
+      <div class="field" data-conta-wrap><label>${label}</label>
         <div class="hint" style="margin-top:0;">Nenhuma conta corrente cadastrada ainda. <span class="link" data-abrir-contas>Cadastrar contas correntes</span></div>
       </div>`;
   }
   // se a despesa aponta pra uma conta que já foi excluída, mantém a opção pra não trocar sem querer
   const orfa = selectedId && !contas.some(cc=>cc.id===selectedId);
   return `
-    <div class="field"><label>${label}</label>
+    <div class="field" data-conta-wrap><label>${label}</label>
       <select name="${name}" ${obrigatorio?'required':''}>
         <option value="">${obrigatorio ? 'Selecione a conta…' : 'Não informada'}</option>
         ${orfa ? `<option value="${escapeAttr(selectedId)}" selected>Conta removida</option>` : ''}
@@ -738,6 +858,7 @@ function renderPlanosModal(){
 function renderModal(){
   const editing = state.editId ? state.contas.find(c=>c.id===state.editId) : null;
   const tipo = editing ? editing.tipo : state.modalTipo;
+  const pago = !!(editing && editing.pagamento);
   return `
     <div class="modal-overlay" id="modal-overlay">
       <div class="modal">
@@ -758,8 +879,9 @@ function renderModal(){
           ` : `
           <div class="field"><label>Data</label><input type="date" name="vencimento" value="${editing? editing.vencimento: todayStr()}" required></div>
           `}
-          ${(!editing && tipo==='avulso') ? contaSelectField('contaPagamento', 'Conta debitada', '', true) : ''}
-          ${(editing && editing.pagamento) ? contaSelectField('contaPagamento', 'Conta debitada no pagamento', editing.contaPagamento||'', false) : ''}
+          ${(!editing && tipo==='avulso') ? formaPagamentoField('desp', [], true) + contaSelectField('contaPagamento', 'Conta debitada', '', true) : ''}
+          ${pago ? formaPagamentoField('desp', parseFormas(editing.formaPagamento), false) + contaSelectField('contaPagamento', 'Conta debitada no pagamento', editing.contaPagamento||'', false) : ''}
+          ${pago ? `<div class="field"><label>Observação do pagamento (opcional)</label><textarea name="obsPagamento" rows="2" maxlength="500" placeholder="Observação sobre o pagamento">${escapeHtml(editing.obsPagamento||'')}</textarea></div>` : ''}
           <div class="field"><label>Comentário (opcional)</label><textarea name="comentario" rows="2" maxlength="500" placeholder="Observação sobre esta despesa">${editing ? escapeHtml(editing.comentario||'') : ''}</textarea></div>
           <div class="field">
             <label>Anexo (nota fiscal, boleto...)</label>
@@ -799,6 +921,19 @@ function bindEvents(){
       state.modalOpen = false; state.editId = null; state.pagarModalOpen = false;
       state.contasModalOpen = true;
       render();
+    });
+  });
+
+  // formulários com forma de pagamento: o campo da conta acompanha o que estiver marcado
+  app.querySelectorAll('form').forEach(form=>{
+    if(!form.querySelector('[data-formas-grupo]')) return;
+    ajustarCampoConta(form);
+    form.querySelectorAll('input[name="formaPagamento"]').forEach(cb=>{
+      cb.addEventListener('change', ()=>{
+        ajustarCampoConta(form);
+        const erro = form.querySelector('[data-formas-erro]');
+        if(erro && formasMarcadas(form).length>0) erro.hidden = true;
+      });
     });
   });
 
@@ -882,13 +1017,16 @@ function bindEvents(){
       const fd = new FormData(e.target);
       const dataPagamento = fd.get('dataPagamento');
       if(!dataPagamento) return;
-      // o campo só existe no formulário quando há contas correntes cadastradas
-      const contaPagamento = fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null;
+      const pag = lerFormaEConta(e.target, fd);
+      if(!pag) return; // faltou marcar a forma de pagamento
+      const formaPagamento = formasLabel(pag.formas);
+      const obsPagamento = String(fd.get('obsPagamento')||'').trim();
       const changed = [];
       state.contas = state.contas.map(c=>{
         if(state.selected.has(c.id)){
-          const updated = {...c, pagamento: dataPagamento};
-          if(contaPagamento!==null) updated.contaPagamento = contaPagamento;
+          const updated = {...c, pagamento: dataPagamento, formaPagamento, obsPagamento};
+          // null = não há contas correntes cadastradas, então não mexe na conta
+          if(pag.contaPagamento!==null) updated.contaPagamento = pag.contaPagamento;
           changed.push(updated);
           return updated;
         }
@@ -1095,9 +1233,14 @@ function bindEvents(){
     });
     app.querySelector('#conta-form').addEventListener('submit', async e=>{
       e.preventDefault();
-      const fd = new FormData(e.target);
+      const form = e.target;
+      const fd = new FormData(form);
       const valor = parseFloat(fd.get('valor'));
       if(!valor || valor<=0) return;
+
+      // forma de pagamento e conta só aparecem em lançamento avulso (já nasce pago) ou ao editar uma despesa paga
+      const pag = lerFormaEConta(form, fd);
+      if(!pag) return; // faltou marcar a forma de pagamento
 
       const anexoFile = fd.get('anexo');
       let anexoBase64 = null;
@@ -1110,8 +1253,7 @@ function bindEvents(){
       }
 
       const comentario = String(fd.get('comentario')||'').trim();
-      // o campo de conta só aparece em lançamento avulso (já nasce pago) ou ao editar uma despesa paga
-      const contaPagamento = fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null;
+      const contaPagamento = pag.contaPagamento;
 
       let changedItem;
       if(state.editId){
@@ -1125,6 +1267,12 @@ function bindEvents(){
               comentario,
             };
             if(contaPagamento!==null) changedItem.contaPagamento = contaPagamento;
+            if(pag.temForma){
+              // se a planilha tinha um texto que o app não reconhece e nada foi marcado, deixa como estava
+              const reconhecia = parseFormas(c.formaPagamento).length>0;
+              if(pag.formas.length>0 || reconhecia || !c.formaPagamento) changedItem.formaPagamento = formasLabel(pag.formas);
+            }
+            if(fd.has('obsPagamento')) changedItem.obsPagamento = String(fd.get('obsPagamento')||'').trim();
             if(anexoBase64){
               changedItem.anexoBase64 = anexoBase64;
               changedItem.anexoNome = anexoFile.name;
@@ -1145,6 +1293,8 @@ function bindEvents(){
           pagamento: isAvulso ? fd.get('vencimento') : null,
           comentario,
           contaPagamento: (isAvulso && contaPagamento) ? contaPagamento : '',
+          formaPagamento: isAvulso ? formasLabel(pag.formas) : '',
+          obsPagamento: '',
         };
         if(anexoBase64){
           changedItem.anexoBase64 = anexoBase64;
@@ -1171,7 +1321,8 @@ function fileToBase64(file){
 }
 
 function exportCsv(rows, filename){
-  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao','Anexo','Comentario','Conta de debito'];
+  // as colunas novas entram no fim, pra quem já usa o arquivo exportado não ter as colunas trocadas de lugar
+  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao','Anexo','Comentario','Conta de debito','Forma de pagamento','Observacao do pagamento'];
   // um ";" ou uma quebra de linha dentro do texto quebraria as colunas do CSV
   const limpo = txt => String(txt||'').replace(/;/g,',').replace(/\s*[\r\n]+\s*/g,' ');
   const lines = [header.join(';')];
@@ -1180,7 +1331,8 @@ function exportCsv(rows, filename){
       c.fornecedor.replace(/;/g,','), c.valor.toFixed(2).replace('.',','),
       planoInfo(c.plano).label, fmtDate(c.vencimento), fmtDate(c.pagamento),
       SITUACAO_LABEL[getSituacao(c)], c.anexo || '',
-      limpo(c.comentario), limpo(contaNome(c.contaPagamento))
+      limpo(c.comentario), limpo(contaNome(c.contaPagamento)),
+      limpo(formaTexto(c)), limpo(c.obsPagamento)
     ].join(';'));
   });
   const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
@@ -1198,13 +1350,15 @@ function exportXls(rows, filename){
     'Valor': c.valor,
     'Vencimento': fmtDate(c.vencimento),
     'Pagamento': fmtDate(c.pagamento),
+    'Forma de pagamento': formaTexto(c),
     'Conta de débito': contaNome(c.contaPagamento),
     'Situação': SITUACAO_LABEL[getSituacao(c)],
     'Comentário': c.comentario || '',
+    'Observação do pagamento': c.obsPagamento || '',
     'Anexo': c.anexo || ''
   }));
   const total = rows.reduce((s,c)=>s+c.valor,0);
-  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Conta de débito':'', 'Situação':'TOTAL', 'Comentário':'', 'Anexo':''});
+  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Forma de pagamento':'', 'Conta de débito':'', 'Situação':'TOTAL', 'Comentário':'', 'Observação do pagamento':'', 'Anexo':''});
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Despesas');
@@ -1226,14 +1380,18 @@ function exportPdf(rows, title){
   doc.setTextColor(0,0,0);
   doc.setFontSize(9);
   doc.text('Gerado em ' + fmtDate(todayStr()), 14, 28.5);
-  // o comentário vai na mesma célula do fornecedor (linha de baixo) pra tabela continuar cabendo na página
+  // o comentário e a observação do pagamento vão na mesma célula do fornecedor (linhas de baixo),
+  // e a forma de pagamento divide a coluna com a conta, pra tabela continuar cabendo na página
   const body = rows.map(c=>[
-    c.fornecedor + (c.comentario ? '\nObs.: ' + c.comentario : ''), planoInfo(c.plano).label, fmtMoney(c.valor),
-    fmtDate(c.vencimento), fmtDate(c.pagamento), contaNome(c.contaPagamento) || '-', SITUACAO_LABEL[getSituacao(c)]
+    c.fornecedor + (c.comentario ? '\nObs.: ' + c.comentario : '') + (c.obsPagamento ? '\nObs. pagamento: ' + c.obsPagamento : ''),
+    planoInfo(c.plano).label, fmtMoney(c.valor),
+    fmtDate(c.vencimento), fmtDate(c.pagamento),
+    [formaTexto(c), contaNome(c.contaPagamento)].filter(Boolean).join('\n') || '-',
+    SITUACAO_LABEL[getSituacao(c)]
   ]);
   doc.autoTable({
     startY: 34,
-    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Conta de débito','Situação']],
+    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Forma / conta','Situação']],
     body,
     styles:{ fontSize:8.5 },
     headStyles:{ fillColor:[15,27,44] },
@@ -1247,7 +1405,7 @@ function exportPdf(rows, title){
 }
 
 function normalizeStr(str){
-  return String(str||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim().replace(/\s+/g,' ');
+  return String(str||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim().replace(/\s+/g,' ');
 }
 function parseValorBR(str){
   if(!str) return null;
@@ -1276,7 +1434,7 @@ function planoFromControle(str){
   return state.planos[0] ? state.planos[0].id : '';
 }
 function parseCsvText(text){
-  const clean = text.replace(/^\uFEFF/, '');
+  const clean = text.replace(/^﻿/, '');
   const lines = clean.split(/\r\n|\n/).filter(l=>l.trim().length>0);
   if(lines.length<2) return [];
   const header = lines[0].split(';').map(h=>h.trim());
@@ -1310,6 +1468,8 @@ function importFromCsvText(text){
     const comentario = (r['Comentario'] || r['Comentário'] || '').trim();
     const contaTexto = normalizeStr(r['Conta de debito'] || r['Conta de débito'] || '');
     const contaMatch = contaTexto ? state.contasCorrentes.find(cc=>normalizeStr(cc.nome)===contaTexto) : null;
+    const formaPagamento = formasLabel(parseFormas(r['Forma de pagamento'] || ''));
+    const obsPagamento = (r['Observacao do pagamento'] || r['Observação do pagamento'] || '').trim();
     if(!fornecedor || !vencimento || valor==null){ skipped++; return; }
     const match = state.contas.find(c=>
       normalizeStr(c.fornecedor)===normalizeStr(fornecedor) && c.vencimento===vencimento
@@ -1328,6 +1488,8 @@ function importFromCsvText(text){
         id: genId(), fornecedor, valor, plano, tipo:'conta-a-pagar',
         vencimento, pagamento: pagamento || null,
         comentario, contaPagamento: (pagamento && contaMatch) ? contaMatch.id : '',
+        formaPagamento: pagamento ? formaPagamento : '',
+        obsPagamento: pagamento ? obsPagamento : '',
       };
       state.contas.unshift(novo);
       changed.push(novo);
