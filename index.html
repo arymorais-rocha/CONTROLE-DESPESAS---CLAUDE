@@ -40,7 +40,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',sans-ser
 .topbar h1{font-family:'Zilla Slab',serif;font-size:23px;font-weight:600;margin:0;}
 .topbar .sub{font-size:12px;color:#9FB0C4;margin-top:3px;display:flex;align-items:center;gap:6px;}
 .sync-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;}
-.topbar .actions{display:flex;gap:10px;align-items:center;}
+.topbar .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
 .btn{border:none;border-radius:5px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;}
 .btn-primary{background:var(--blue);color:#fff;}
 .btn-primary:hover{background:#2559c4;}
@@ -120,7 +120,10 @@ tbody tr:hover{background:#FAFBF9;}
 .tipo-toggle button:not(:last-child){border-right:1px solid var(--ink);}
 .field{margin-bottom:12px;}
 .field label{display:block;font-size:11.5px;color:var(--ink-soft);margin-bottom:4px;font-weight:600;}
-.field input,.field select{width:100%;padding:9px 10px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+.field input,.field select,.field textarea{width:100%;padding:9px 10px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+.field textarea{resize:vertical;min-height:62px;line-height:1.4;}
+.field .hint{font-size:11.5px;color:var(--ink-soft);margin-top:5px;line-height:1.4;}
+.field .hint .link{color:var(--blue);cursor:pointer;text-decoration:underline;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
 .btn-outline{background:#fff;border:1px solid var(--rule);color:var(--ink-soft);}
 
@@ -134,6 +137,19 @@ tbody tr:hover{background:#FAFBF9;}
 .plano-add-row{display:flex;align-items:center;gap:8px;padding-top:10px;border-top:1px solid var(--rule);}
 .plano-add-row input[type="color"]{width:30px;height:30px;padding:2px;border:1px solid var(--rule);border-radius:6px;cursor:pointer;flex-shrink:0;}
 .plano-add-row input[type="text"]{flex:1;padding:9px 10px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+
+.comentario-line{font-size:12px;font-weight:400;color:var(--ink-soft);margin-top:5px;line-height:1.35;max-width:420px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:normal;}
+.conta-line{font-size:11.5px;color:var(--ink-soft);margin-top:3px;white-space:normal;}
+
+.modal.modal-wide{max-width:580px;}
+.cc-list{max-height:300px;overflow-y:auto;margin-bottom:14px;}
+.cc-row,.cc-add-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.cc-row{padding:8px 0;border-bottom:1px solid var(--rule);}
+.cc-row:last-child{border-bottom:none;}
+.cc-add-row{padding-top:12px;border-top:1px solid var(--rule);}
+.cc-row input[type="text"],.cc-add-row input[type="text"]{flex:1 1 120px;min-width:0;padding:8px 9px;border:1px solid var(--rule);border-radius:5px;font-size:13.5px;font-family:'Inter',sans-serif;}
+
+.notice{margin:14px 24px 0;background:#FBEEDB;border:1px solid #E9CFA4;color:#7A4A0E;border-radius:8px;padding:11px 14px;font-size:12.5px;line-height:1.45;}
 
 .lock-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--navy-900);padding:20px;}
 .lock-card{background:#fff;border-radius:10px;padding:34px 28px;max-width:340px;width:100%;text-align:center;}
@@ -206,6 +222,8 @@ function renderLockScreen(errorMsg){
 let state = {
   contas: [],
   planos: [],
+  contasCorrentes: [],
+  backendDesatualizado: false,
   loading: true,
   selected: new Set(),
   filterPlano: 'todos',
@@ -221,6 +239,7 @@ let state = {
   exportOpen: false,
   pagarModalOpen: false,
   planosModalOpen: false,
+  contasModalOpen: false,
   error: null,
 };
 
@@ -230,6 +249,21 @@ const todayStr = () => new Date().toISOString().slice(0,10);
 const fmtMoney = n => 'R$ ' + Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = iso => { if(!iso) return '-'; const [y,m,d]=iso.split('-'); return d+'/'+m+'/'+y; };
 const planoInfo = id => state.planos.find(p=>p.id===id) || {id:id||'sem-plano', label:'Sem plano', color:'#746C5C'};
+// Conta corrente de onde saiu o pagamento. Devolve null quando a despesa não tem conta informada.
+const contaInfo = id => id ? (state.contasCorrentes.find(cc=>cc.id===id) || {id:id, nome:'Conta removida', detalhes:''}) : null;
+const contaNome = id => { const cc = contaInfo(id); return cc ? cc.nome : ''; };
+
+// Guarda as contas correntes que vieram da planilha. Se a resposta não trouxe
+// essa lista, o Apps Script da planilha ainda é o antigo (sem contas correntes
+// e sem comentário) — o app avisa na tela em vez de perder o que foi digitado.
+function applyContasCorrentes(data){
+  if(data && Array.isArray(data.contasCorrentes)){
+    state.contasCorrentes = data.contasCorrentes;
+    state.backendDesatualizado = false;
+  } else {
+    state.backendDesatualizado = true;
+  }
+}
 
 function getSituacao(c){
   if(c.pagamento) return 'paga';
@@ -247,6 +281,7 @@ async function loadData(){
     if(data && data.ok){
       state.contas = data.contas || [];
       state.planos = data.planos || [];
+      applyContasCorrentes(data);
       state.error = null;
     } else {
       state.contas = [];
@@ -277,6 +312,7 @@ async function syncChange(changedContas, deletedIds, retriesLeft){
     if(data && data.ok){
       state.contas = data.contas || [];
       if(data.planos) state.planos = data.planos;
+      applyContasCorrentes(data);
       state.error = null;
       render();
       return;
@@ -305,6 +341,7 @@ async function syncPlanos(changedPlanos, deletedPlanoIds, retriesLeft){
     if(data && data.ok){
       state.planos = data.planos || [];
       if(data.contas) state.contas = data.contas;
+      applyContasCorrentes(data);
       state.error = null;
       render();
       return;
@@ -320,10 +357,40 @@ async function syncPlanos(changedPlanos, deletedPlanoIds, retriesLeft){
   }
 }
 
+// Mesmo esquema, mas pras contas correntes (cadastrar/renomear/excluir).
+async function syncContasCorrentes(changed, deletedIds, retriesLeft){
+  if(retriesLeft===undefined) retriesLeft = 2;
+  try{
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action:'sync', token: ACCESS_TOKEN, contasCorrentes: changed, deletedContaCorrenteIds: deletedIds }),
+    });
+    const data = await res.json();
+    if(data && data.ok){
+      applyContasCorrentes(data);
+      if(data.contas) state.contas = data.contas;
+      if(data.planos) state.planos = data.planos;
+      state.error = null;
+      render();
+      return;
+    }
+    throw new Error((data && data.error) || 'Falha ao salvar');
+  }catch(e){
+    if(retriesLeft>0){
+      await new Promise(r=>setTimeout(r, 700));
+      return syncContasCorrentes(changed, deletedIds, retriesLeft-1);
+    }
+    state.error = 'Não foi possível salvar as contas correntes agora (conexão instável). Tente novamente.';
+    render();
+  }
+}
+
 function getFiltered(){
+  const busca = state.filterBusca.toLowerCase();
   return state.contas.filter(c=>{
     if(state.filterPlano!=='todos' && c.plano!==state.filterPlano) return false;
-    if(state.filterBusca && !c.fornecedor.toLowerCase().includes(state.filterBusca.toLowerCase())) return false;
+    if(busca && !String(c.fornecedor||'').toLowerCase().includes(busca) && !String(c.comentario||'').toLowerCase().includes(busca)) return false;
     const dateVal = c[state.filterDateField];
     if(state.filterMes){
       if(!dateVal || dateVal.slice(0,7)!==state.filterMes) return false;
@@ -348,9 +415,58 @@ function getSelectedRows(){
   return state.contas.filter(c=>state.selected.has(c.id));
 }
 
+// --- Rascunho dos formulários abertos -------------------------------------
+// A tela inteira é redesenhada a cada mudança (inclusive quando chega a
+// resposta da planilha, 1–2 s depois de salvar). Sem isto, quem já estivesse
+// digitando outra despesa, um comentário ou a próxima conta corrente perderia
+// o que digitou. Aqui guardamos só os campos que a pessoa alterou e devolvemos
+// depois do redesenho; o arquivo escolhido como anexo é movido junto.
+function fieldKey(el){
+  if(el.id) return '#'+el.id;
+  if(el.name) return 'name:'+el.name;
+  const d = el.dataset ? (el.dataset.ccId || el.dataset.planoId) : null;
+  return d ? el.className+':'+d : null;
+}
+function captureDrafts(){
+  const drafts = [];
+  document.querySelectorAll('#app .modal-overlay').forEach(ov=>{
+    ov.querySelectorAll('input,select,textarea').forEach(el=>{
+      const key = fieldKey(el);
+      if(!key) return;
+      if(el.type==='file'){
+        if(el.files && el.files.length) drafts.push({ov:ov.id, key, node:el});
+        return;
+      }
+      const alterado = el.tagName==='SELECT'
+        ? Array.from(el.options).some(o=>o.selected!==o.defaultSelected)
+        : el.value!==el.defaultValue;
+      if(alterado) drafts.push({ov:ov.id, key, value:el.value});
+    });
+  });
+  return drafts;
+}
+function findField(ovId, key){
+  const ov = ovId ? document.getElementById(ovId) : null;
+  if(!ov) return null;
+  return Array.from(ov.querySelectorAll('input,select,textarea')).find(x=>fieldKey(x)===key) || null;
+}
+function restoreDrafts(drafts){
+  drafts.forEach(d=>{
+    const el = findField(d.ov, d.key);
+    if(!el) return; // o formulário foi fechado ou o campo não existe mais
+    if(d.node){ el.replaceWith(d.node); return; }
+    if(el.tagName==='SELECT' && !Array.from(el.options).some(o=>o.value===d.value)) return;
+    el.value = d.value;
+  });
+}
+
 function render(){
   const active = document.activeElement;
   const activeId = active && active.id ? active.id : null;
+  const activeOv = active && active.closest ? active.closest('.modal-overlay') : null;
+  const activeOvId = activeOv ? activeOv.id : null;
+  const activeKey = (activeOv && active.matches('input,select,textarea')) ? fieldKey(active) : null;
+  const drafts = captureDrafts();
   const selStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
   const selEnd = active && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
 
@@ -375,6 +491,7 @@ function render(){
       <div class="actions">
         <button class="btn btn-ghost" id="btn-lock" title="Bloquear app">🔒 Sair</button>
         <button class="btn btn-ghost" id="btn-planos">Planos de contas</button>
+        <button class="btn btn-ghost" id="btn-contas">Contas correntes</button>
         <button class="btn btn-ghost" id="btn-import">Importar CSV</button>
         <input type="file" id="import-file" accept=".csv" style="display:none">
         <div class="dropdown-wrap">
@@ -395,6 +512,9 @@ function render(){
       </div>
     </div>
 
+    ${state.backendDesatualizado && !state.loading && !state.error ? `
+    <div class="notice"><b>Falta atualizar o Apps Script da planilha.</b> Enquanto o novo Code.gs não for colado e reimplantado, os comentários, as contas correntes e a conta de débito dos pagamentos não ficam gravados.</div>` : ''}
+
     <div class="cards">
       <div class="card"><div class="label">A VENCER${state.filterPlano!=='todos'?' · '+planoInfo(state.filterPlano).label.toUpperCase():''}</div><div class="value">${fmtMoney(aVencer)}</div></div>
       <div class="card vencidas"><div class="label">VENCIDAS${state.filterPlano!=='todos'?' · '+planoInfo(state.filterPlano).label.toUpperCase():''}</div><div class="value">${fmtMoney(vencidas)}</div></div>
@@ -407,7 +527,7 @@ function render(){
         <option value="todos">Todos os planos de contas</option>
         ${state.planos.map(p=>`<option value="${p.id}" ${state.filterPlano===p.id?'selected':''}>${p.label}</option>`).join('')}
       </select>
-      <input class="grow" type="text" id="f-busca" placeholder="Pesquisar fornecedor…" value="${state.filterBusca}">
+      <input class="grow" type="text" id="f-busca" placeholder="Pesquisar fornecedor ou comentário…" value="${escapeAttr(state.filterBusca)}">
       <select id="f-datefield">
         <option value="vencimento" ${state.filterDateField==='vencimento'?'selected':''}>Por vencimento</option>
         <option value="pagamento" ${state.filterDateField==='pagamento'?'selected':''}>Por pagamento</option>
@@ -460,10 +580,10 @@ function render(){
               return `
               <tr>
                 <td><input type="checkbox" class="row-check" data-id="${c.id}" ${state.selected.has(c.id)?'checked':''}></td>
-                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span></td>
+                <td class="fornecedor">${escapeHtml(c.fornecedor)}<br><span class="plano-tag" style="background:${plano.color}">${plano.label}</span>${c.comentario ? `<div class="comentario-line" title="${escapeAttr(c.comentario)}">💬 ${escapeHtml(c.comentario)}</div>` : ''}</td>
                 <td class="valor-cell">${fmtMoney(c.valor)}</td>
                 <td class="date-cell">${fmtDate(c.vencimento)}</td>
-                <td class="date-cell">${fmtDate(c.pagamento)}</td>
+                <td class="date-cell">${fmtDate(c.pagamento)}${c.pagamento && c.contaPagamento ? `<div class="conta-line">${escapeHtml(contaNome(c.contaPagamento))}</div>` : ''}</td>
                 <td><span class="badge ${sit}">${SITUACAO_LABEL[sit].toUpperCase()}</span></td>
                 <td class="acoes">
                   <button class="icon-btn" data-view-anexo="${c.id}" title="${c.anexo?'Ver anexo':'Sem anexo'}" ${c.anexo?'':'disabled style="opacity:.35;cursor:not-allowed;"'}>📎</button>
@@ -486,12 +606,14 @@ function render(){
     ${state.modalOpen ? renderModal() : ''}
     ${state.pagarModalOpen ? renderPagarModal() : ''}
     ${state.planosModalOpen ? renderPlanosModal() : ''}
+    ${state.contasModalOpen ? renderContasModal() : ''}
   `;
 
+  restoreDrafts(drafts);
   bindEvents();
 
-  if(activeId){
-    const toFocus = document.getElementById(activeId);
+  if(activeId || activeKey){
+    const toFocus = activeId ? document.getElementById(activeId) : findField(activeOvId, activeKey);
     if(toFocus){
       toFocus.focus();
       if(selStart!=null && typeof toFocus.setSelectionRange === 'function'){
@@ -513,11 +635,65 @@ function renderPagarModal(){
         </p>
         <form id="pagar-form">
           <div class="field"><label>Data de pagamento</label><input type="date" name="dataPagamento" value="${todayStr()}" required></div>
+          ${contaSelectField('contaPagamento', 'Conta a ser debitada', rows.length===1 ? rows[0].contaPagamento : '', true)}
           <div class="modal-actions">
             <button type="button" class="btn btn-outline" id="pagar-cancel">Cancelar</button>
             <button type="submit" class="btn btn-green">Confirmar pagamento</button>
           </div>
         </form>
+      </div>
+    </div>
+  `;
+}
+
+// Campo "de qual conta corrente sai o pagamento". Quando ainda não existe
+// nenhuma conta cadastrada, mostra o atalho pro cadastro em vez de uma lista vazia.
+function contaSelectField(name, label, selectedId, obrigatorio){
+  const contas = state.contasCorrentes;
+  if(contas.length===0){
+    return `
+      <div class="field"><label>${label}</label>
+        <div class="hint" style="margin-top:0;">Nenhuma conta corrente cadastrada ainda. <span class="link" data-abrir-contas>Cadastrar contas correntes</span></div>
+      </div>`;
+  }
+  // se a despesa aponta pra uma conta que já foi excluída, mantém a opção pra não trocar sem querer
+  const orfa = selectedId && !contas.some(cc=>cc.id===selectedId);
+  return `
+    <div class="field"><label>${label}</label>
+      <select name="${name}" ${obrigatorio?'required':''}>
+        <option value="">${obrigatorio ? 'Selecione a conta…' : 'Não informada'}</option>
+        ${orfa ? `<option value="${escapeAttr(selectedId)}" selected>Conta removida</option>` : ''}
+        ${contas.map(cc=>`<option value="${escapeAttr(cc.id)}" ${selectedId===cc.id?'selected':''}>${escapeHtml(cc.nome)}${cc.detalhes?' — '+escapeHtml(cc.detalhes):''}</option>`).join('')}
+      </select>
+    </div>`;
+}
+
+function renderContasModal(){
+  return `
+    <div class="modal-overlay" id="contas-overlay">
+      <div class="modal modal-wide">
+        <h2>Contas correntes</h2>
+        <p style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 14px;">Cadastre as contas de onde os pagamentos saem. Na hora de pagar uma despesa, você escolhe de qual delas vai ser debitado.</p>
+        <div class="cc-list">
+          ${state.contasCorrentes.map(cc=>{
+            const emUso = state.contas.some(c=>c.contaPagamento===cc.id);
+            return `
+            <div class="cc-row">
+              <input type="text" class="cc-nome-input" data-cc-id="${escapeAttr(cc.id)}" value="${escapeAttr(cc.nome)}" placeholder="Nome da conta" aria-label="Nome da conta">
+              <input type="text" class="cc-detalhes-input" data-cc-id="${escapeAttr(cc.id)}" value="${escapeAttr(cc.detalhes||'')}" placeholder="Banco / agência / conta" aria-label="Banco, agência e conta">
+              <button type="button" class="icon-btn danger" data-cc-del="${escapeAttr(cc.id)}" title="${emUso?'Excluir (em uso)':'Excluir'}">🗑</button>
+            </div>`;
+          }).join('')}
+          ${state.contasCorrentes.length===0 ? `<p style="font-size:13px;color:var(--ink-soft);margin:4px 0 10px;">Nenhuma conta corrente cadastrada ainda.</p>` : ''}
+        </div>
+        <div class="cc-add-row">
+          <input type="text" id="nova-cc-nome" placeholder="Nome da nova conta" aria-label="Nome da nova conta">
+          <input type="text" id="nova-cc-detalhes" placeholder="Banco / agência / conta" aria-label="Banco, agência e conta da nova conta">
+          <button type="button" class="btn btn-primary" id="btn-add-cc">+ Adicionar</button>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" id="contas-close">Fechar</button>
+        </div>
       </div>
     </div>
   `;
@@ -577,6 +753,9 @@ function renderModal(){
           ` : `
           <div class="field"><label>Data</label><input type="date" name="vencimento" value="${editing? editing.vencimento: todayStr()}" required></div>
           `}
+          ${(!editing && tipo==='avulso') ? contaSelectField('contaPagamento', 'Conta debitada', '', true) : ''}
+          ${(editing && editing.pagamento) ? contaSelectField('contaPagamento', 'Conta debitada no pagamento', editing.contaPagamento||'', false) : ''}
+          <div class="field"><label>Comentário (opcional)</label><textarea name="comentario" rows="2" maxlength="500" placeholder="Observação sobre esta despesa">${editing ? escapeHtml(editing.comentario||'') : ''}</textarea></div>
           <div class="field">
             <label>Anexo (nota fiscal, boleto...)</label>
             ${editing && editing.anexo ? `<div style="margin-bottom:6px;font-size:12.5px;"><a href="${editing.anexo}" target="_blank" rel="noopener">📎 Ver anexo atual</a> — escolha outro arquivo abaixo pra substituir</div>` : ''}
@@ -604,6 +783,18 @@ function bindEvents(){
 
   app.querySelector('#btn-planos').addEventListener('click', ()=>{
     state.planosModalOpen = true; state.exportOpen=false; render();
+  });
+
+  app.querySelector('#btn-contas').addEventListener('click', ()=>{
+    state.contasModalOpen = true; state.exportOpen=false; render();
+  });
+  // atalho "Cadastrar contas correntes" que aparece nos formulários quando ainda não há nenhuma conta
+  app.querySelectorAll('[data-abrir-contas]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      state.modalOpen = false; state.editId = null; state.pagarModalOpen = false;
+      state.contasModalOpen = true;
+      render();
+    });
   });
 
   app.querySelector('#btn-nova').addEventListener('click', ()=>{
@@ -686,10 +877,13 @@ function bindEvents(){
       const fd = new FormData(e.target);
       const dataPagamento = fd.get('dataPagamento');
       if(!dataPagamento) return;
+      // o campo só existe no formulário quando há contas correntes cadastradas
+      const contaPagamento = fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null;
       const changed = [];
       state.contas = state.contas.map(c=>{
         if(state.selected.has(c.id)){
           const updated = {...c, pagamento: dataPagamento};
+          if(contaPagamento!==null) updated.contaPagamento = contaPagamento;
           changed.push(updated);
           return updated;
         }
@@ -759,6 +953,77 @@ function bindEvents(){
     });
   }
 
+  const contasOverlay = app.querySelector('#contas-overlay');
+  if(contasOverlay){
+    contasOverlay.addEventListener('click', e=>{ if(e.target===contasOverlay){ state.contasModalOpen=false; render(); } });
+    app.querySelector('#contas-close').addEventListener('click', ()=>{ state.contasModalOpen=false; render(); });
+
+    // salva ao confirmar (Enter) ou ao sair do campo; se nada mudou, não faz nada
+    app.querySelectorAll('.cc-nome-input').forEach(input=>{
+      const salvar = ()=>{
+        const cc = state.contasCorrentes.find(x=>x.id===input.dataset.ccId);
+        if(!cc) return;
+        const novoNome = input.value.trim();
+        if(!novoNome){ input.value = cc.nome; return; } // conta não pode ficar sem nome
+        if(cc.nome===novoNome) return;
+        cc.nome = novoNome;
+        syncContasCorrentes([cc], []);
+      };
+      input.addEventListener('change', salvar);
+      input.addEventListener('blur', salvar);
+    });
+    app.querySelectorAll('.cc-detalhes-input').forEach(input=>{
+      const salvar = ()=>{
+        const cc = state.contasCorrentes.find(x=>x.id===input.dataset.ccId);
+        if(!cc) return;
+        const novo = input.value.trim();
+        if((cc.detalhes||'')===novo) return;
+        cc.detalhes = novo;
+        syncContasCorrentes([cc], []);
+      };
+      input.addEventListener('change', salvar);
+      input.addEventListener('blur', salvar);
+    });
+
+    app.querySelectorAll('[data-cc-del]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const id = btn.dataset.ccDel;
+        const emUso = state.contas.filter(c=>c.contaPagamento===id).length;
+        if(emUso>0){
+          alert(`Essa conta foi usada em ${emUso} pagamento(s). Troque a conta desses pagamentos (editando as despesas) antes de excluí-la.`);
+          return;
+        }
+        if(!confirm('Excluir esta conta corrente?')) return;
+        state.contasCorrentes = state.contasCorrentes.filter(cc=>cc.id!==id);
+        render();
+        syncContasCorrentes([], [id]);
+      });
+    });
+
+    const addConta = ()=>{
+      const nomeInput = app.querySelector('#nova-cc-nome');
+      const detalhesInput = app.querySelector('#nova-cc-detalhes');
+      const nome = nomeInput.value.trim();
+      if(!nome){ nomeInput.focus(); return; }
+      if(state.contasCorrentes.some(cc=>normalizeStr(cc.nome)===normalizeStr(nome))){
+        alert('Já existe uma conta corrente com esse nome.');
+        nomeInput.focus();
+        return;
+      }
+      const nova = { id: genId(), nome, detalhes: detalhesInput.value.trim() };
+      state.contasCorrentes.push(nova);
+      nomeInput.value = ''; detalhesInput.value = '';
+      render();
+      const proximo = document.getElementById('nova-cc-nome');
+      if(proximo) proximo.focus();
+      syncContasCorrentes([nova], []);
+    };
+    app.querySelector('#btn-add-cc').addEventListener('click', addConta);
+    ['#nova-cc-nome','#nova-cc-detalhes'].forEach(sel=>{
+      app.querySelector(sel).addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); addConta(); } });
+    });
+  }
+
   const planosOverlay = app.querySelector('#planos-overlay');
   if(planosOverlay){
     planosOverlay.addEventListener('click', e=>{ if(e.target===planosOverlay){ state.planosModalOpen=false; render(); } });
@@ -810,6 +1075,7 @@ function bindEvents(){
       if(!label) { labelInput.focus(); return; }
       const novo = { id: genId(), label, color: colorInput.value };
       state.planos.push(novo);
+      labelInput.value = '';
       render();
       syncPlanos([novo], []);
     });
@@ -838,6 +1104,10 @@ function bindEvents(){
         anexoBase64 = await fileToBase64(anexoFile);
       }
 
+      const comentario = String(fd.get('comentario')||'').trim();
+      // o campo de conta só aparece em lançamento avulso (já nasce pago) ou ao editar uma despesa paga
+      const contaPagamento = fd.has('contaPagamento') ? (fd.get('contaPagamento') || '') : null;
+
       let changedItem;
       if(state.editId){
         state.contas = state.contas.map(c=> {
@@ -847,7 +1117,9 @@ function bindEvents(){
               fornecedor: fd.get('fornecedor').trim(),
               valor, plano: fd.get('plano'),
               vencimento: fd.get('vencimento'),
+              comentario,
             };
+            if(contaPagamento!==null) changedItem.contaPagamento = contaPagamento;
             if(anexoBase64){
               changedItem.anexoBase64 = anexoBase64;
               changedItem.anexoNome = anexoFile.name;
@@ -866,6 +1138,8 @@ function bindEvents(){
           tipo: state.modalTipo,
           vencimento: fd.get('vencimento'),
           pagamento: isAvulso ? fd.get('vencimento') : null,
+          comentario,
+          contaPagamento: (isAvulso && contaPagamento) ? contaPagamento : '',
         };
         if(anexoBase64){
           changedItem.anexoBase64 = anexoBase64;
@@ -892,13 +1166,16 @@ function fileToBase64(file){
 }
 
 function exportCsv(rows, filename){
-  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao','Anexo'];
+  const header = ['Fornecedor','Valor','Plano de contas','Vencimento','Pagamento','Situacao','Anexo','Comentario','Conta de debito'];
+  // um ";" ou uma quebra de linha dentro do texto quebraria as colunas do CSV
+  const limpo = txt => String(txt||'').replace(/;/g,',').replace(/\s*[\r\n]+\s*/g,' ');
   const lines = [header.join(';')];
   rows.forEach(c=>{
     lines.push([
       c.fornecedor.replace(/;/g,','), c.valor.toFixed(2).replace('.',','),
       planoInfo(c.plano).label, fmtDate(c.vencimento), fmtDate(c.pagamento),
-      SITUACAO_LABEL[getSituacao(c)], c.anexo || ''
+      SITUACAO_LABEL[getSituacao(c)], c.anexo || '',
+      limpo(c.comentario), limpo(contaNome(c.contaPagamento))
     ].join(';'));
   });
   const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
@@ -916,11 +1193,13 @@ function exportXls(rows, filename){
     'Valor': c.valor,
     'Vencimento': fmtDate(c.vencimento),
     'Pagamento': fmtDate(c.pagamento),
+    'Conta de débito': contaNome(c.contaPagamento),
     'Situação': SITUACAO_LABEL[getSituacao(c)],
+    'Comentário': c.comentario || '',
     'Anexo': c.anexo || ''
   }));
   const total = rows.reduce((s,c)=>s+c.valor,0);
-  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Situação':'TOTAL', 'Anexo':''});
+  data.push({'Fornecedor':'', 'Plano de contas':'', 'Valor': total, 'Vencimento':'', 'Pagamento':'', 'Conta de débito':'', 'Situação':'TOTAL', 'Comentário':'', 'Anexo':''});
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Despesas');
@@ -942,16 +1221,18 @@ function exportPdf(rows, title){
   doc.setTextColor(0,0,0);
   doc.setFontSize(9);
   doc.text('Gerado em ' + fmtDate(todayStr()), 14, 28.5);
+  // o comentário vai na mesma célula do fornecedor (linha de baixo) pra tabela continuar cabendo na página
   const body = rows.map(c=>[
-    c.fornecedor, planoInfo(c.plano).label, fmtMoney(c.valor),
-    fmtDate(c.vencimento), fmtDate(c.pagamento), SITUACAO_LABEL[getSituacao(c)]
+    c.fornecedor + (c.comentario ? '\nObs.: ' + c.comentario : ''), planoInfo(c.plano).label, fmtMoney(c.valor),
+    fmtDate(c.vencimento), fmtDate(c.pagamento), contaNome(c.contaPagamento) || '-', SITUACAO_LABEL[getSituacao(c)]
   ]);
   doc.autoTable({
     startY: 34,
-    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Situação']],
+    head: [['Fornecedor','Plano de contas','Valor','Vencimento','Pagamento','Conta de débito','Situação']],
     body,
     styles:{ fontSize:8.5 },
     headStyles:{ fillColor:[15,27,44] },
+    columnStyles:{ 2:{ cellWidth:26 }, 3:{ cellWidth:21 }, 4:{ cellWidth:21 }, 6:{ cellWidth:20 } },
   });
   const total = rows.reduce((s,c)=>s+c.valor,0);
   const finalY = doc.lastAutoTable.finalY || 28;
@@ -1021,6 +1302,9 @@ function importFromCsvText(text){
     const pagamento = parseDateBR(r['Pagamento']);
     const planoTexto = r['Controle'] || r['Plano de contas'] || '';
     const plano = planoFromControle(planoTexto);
+    const comentario = (r['Comentario'] || r['Comentário'] || '').trim();
+    const contaTexto = normalizeStr(r['Conta de debito'] || r['Conta de débito'] || '');
+    const contaMatch = contaTexto ? state.contasCorrentes.find(cc=>normalizeStr(cc.nome)===contaTexto) : null;
     if(!fornecedor || !vencimento || valor==null){ skipped++; return; }
     const match = state.contas.find(c=>
       normalizeStr(c.fornecedor)===normalizeStr(fornecedor) && c.vencimento===vencimento
@@ -1038,6 +1322,7 @@ function importFromCsvText(text){
       const novo = {
         id: genId(), fornecedor, valor, plano, tipo:'conta-a-pagar',
         vencimento, pagamento: pagamento || null,
+        comentario, contaPagamento: (pagamento && contaMatch) ? contaMatch.id : '',
       };
       state.contas.unshift(novo);
       changed.push(novo);
@@ -1052,7 +1337,7 @@ function importFromCsvText(text){
 }
 
 function escapeHtml(str){ const d=document.createElement('div'); d.textContent=str; return d.innerHTML; }
-function escapeAttr(str){ return String(str).replace(/"/g,'&quot;'); }
+function escapeAttr(str){ return String(str==null?'':str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 if(isUnlocked()){
   render();
