@@ -245,7 +245,12 @@ let state = {
 
 const $ = sel => document.querySelector(sel);
 const genId = () => Date.now()+'-'+Math.random().toString(36).slice(2,7);
-const todayStr = () => new Date().toISOString().slice(0,10);
+// Data de hoje no fuso do aparelho. (toISOString() devolve a data em UTC: no
+// Brasil, das 21h em diante, isso já seria o dia seguinte.)
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+};
 const fmtMoney = n => 'R$ ' + Number(n).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = iso => { if(!iso) return '-'; const [y,m,d]=iso.split('-'); return d+'/'+m+'/'+y; };
 const planoInfo = id => state.planos.find(p=>p.id===id) || {id:id||'sem-plano', label:'Sem plano', color:'#746C5C'};
